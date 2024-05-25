@@ -1,95 +1,119 @@
 import pandas as pd
-import random
+import re
 
-# Загрузка данных
+# Загрузка данных из файлов
 class_subs_hours_path = 'class+subs-hours.xlsx'
 teacher_subs_room_class_path = 'teacher_subs_room_class.xlsx'
 
-# Загрузка данных из файлов
-class_subs_hours_df = pd.read_excel(class_subs_hours_path, header=None)
-teacher_subs_room_class_df = pd.read_excel(teacher_subs_room_class_path)
+class_subs_hours = pd.read_excel(class_subs_hours_path)
+teacher_subs_room_class = pd.read_excel(teacher_subs_room_class_path)
 
-# Обработка данных для class+subs-hours.xlsx
-def process_class_subs_hours(df):
-    classes = {}
-    current_class = None
-    for index, row in df.iterrows():
-        if pd.isna(row[1]):
-            current_class = row[0]
-            classes[current_class] = {}
-        else:
-            subject = row[0]
-            hours = int(row[1])
-            classes[current_class][subject] = hours
-    return classes
+# Преобразование данных из таблиц в удобный формат
+class_subs_hours.columns = ['Класс/Предмет', 'Часы']
+class_subs_hours['Класс/Предмет'] = class_subs_hours['Класс/Предмет'].fillna('')
 
-class_hours = process_class_subs_hours(class_subs_hours_df)
+class_data = {}
+current_class = None
 
-# Обработка данных для teacher_subs_room_class.xlsx
-teacher_subs_room_class_df['Предметы'] = teacher_subs_room_class_df['Предметы'].str.split(',')
-teacher_subs_room_class_df['Классы'] = teacher_subs_room_class_df['Классы'].str.split(',')
+for index, row in class_subs_hours.iterrows():
+    if pd.isna(row['Часы']) and row['Класс/Предмет'] != '':
+        current_class = row['Класс/Предмет']
+        class_data[current_class] = {}
+    elif not pd.isna(row['Часы']) and current_class:
+        class_data[current_class][row['Класс/Предмет']] = int(row['Часы'])
 
-teachers = teacher_subs_room_class_df.to_dict(orient='records')
+# Подготовка данных о нагрузке учителей
+teacher_data = teacher_subs_room_class[['Учитель', 'Предметы', 'Кабинет', 'Классы']]
+teacher_data['Классы'] = teacher_data['Классы'].str.replace('\n', '')
 
-# Функция для создания расписания
-def create_schedule(classes, teachers):
-    schedule = {class_name: [] for class_name in classes.keys()}
+# Создание словаря с расписанием для каждого класса
+days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница']
+schedule = {class_name: {day: ['']*7 for day in days} for class_name in class_data.keys()}
+
+# Заполнение фиксированных уроков
+for class_name in schedule:
+    schedule[class_name]['Понедельник'][0] = 'Разговоры о важном'
+    schedule[class_name]['Четверг'][6] = 'Классный час'
+
+# Функция проверки занятости учителя
+def is_teacher_available(schedule, teacher, day, lesson):
+    for class_schedule in schedule.values():
+        if class_schedule[day][lesson] == teacher:
+            return False
+    return True
+
+# Функция проверки допустимого количества уроков в день для класса
+def is_class_limit_exceeded(class_name, schedule, day, max_lessons):
+    return sum(1 for lesson in schedule[class_name][day] if lesson) >= max_lessons
+
+# Распределение уроков с учетом занятости учителей и ограничений
+def distribute_lessons(schedule, class_data, teacher_data):
     days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница']
-    periods_per_day = 7
     
-    # Создаем структуру для учета занятости учителей и кабинетов
-    teacher_availability = {teacher['Учитель']: {day: [True] * periods_per_day for day in days} for teacher in teachers}
-    room_availability = {teacher['Кабинет']: {day: [True] * periods_per_day for day in days} for teacher in teachers}
-
-    def assign_period(class_name, subject, teacher, day, period):
-        if teacher_availability[teacher['Учитель']][day][period - 1] and room_availability[teacher['Кабинет']][day][period - 1]:
-            schedule[class_name].append((day, period, teacher['Учитель'], subject))
-            teacher_availability[teacher['Учитель']][day][period - 1] = False
-            room_availability[teacher['Кабинет']][day][period - 1] = False
-            return True
-        return False
-
-    # Сортируем предметы по количеству часов в убывающем порядке для каждого класса
-    for class_name, subjects in classes.items():
-        sorted_subjects = sorted(subjects.items(), key=lambda item: item[1], reverse=True)
+    # Создаем словарь соответствия учителей и предметов
+    teacher_subjects = {}
+    for _, row in teacher_data.iterrows():
+        teacher = row['Учитель']
+        subjects = row['Предметы'].split(',')
+        for subject in subjects:
+            if subject not in teacher_subjects:
+                teacher_subjects[subject] = []
+            teacher_subjects[subject].append(teacher)
+    
+    for class_name, subjects in class_data.items():
+        lessons_to_schedule = [(subject, hours) for subject, hours in subjects.items()]
         
-        for subject, hours in sorted_subjects:
-            assigned_hours = 0
+        # Сортируем предметы по убыванию часов для равномерного распределения
+        lessons_to_schedule.sort(key=lambda x: x[1], reverse=True)
+        
+        max_lessons = 6 if "5" in class_name or "6" in class_name else 7
+        
+        for subject, hours in lessons_to_schedule:
+            distributed_hours = 0
+            
             for day in days:
-                for period in range(1, periods_per_day + 1):
-                    if assigned_hours >= hours:
-                        break
-                    available_teachers = [
-                        teacher for teacher in teachers 
-                        if subject in teacher['Предметы'] and class_name in teacher['Классы']
-                    ]
-                    if available_teachers:
+                if distributed_hours >= hours:
+                    break
+
+                for lesson in range(7):
+                    if schedule[class_name][day][lesson] == '' and (lesson == 0 or schedule[class_name][day][lesson-1] != subject):
+                        if is_class_limit_exceeded(class_name, schedule, day, max_lessons):
+                            continue
+                        available_teachers = teacher_subjects.get(subject, [])
                         for teacher in available_teachers:
-                            if assign_period(class_name, subject, teacher, day, period):
-                                assigned_hours += 1
+                            if is_teacher_available(schedule, teacher, day, lesson):
+                                schedule[class_name][day][lesson] = subject
+                                distributed_hours += 1
                                 break
-                    if assigned_hours >= hours:
-                        break
+
+                        if distributed_hours >= hours:
+                            break
 
     return schedule
 
-schedule = create_schedule(class_hours, teachers)
+# Применяем функцию к нашему расписанию
+updated_schedule = distribute_lessons(schedule, class_data, teacher_data)
 
-# Функция для отображения расписания
-def display_schedule(schedule):
-    schedule_df = []
-    for class_name, lessons in schedule.items():
-        for day, period, teacher, subject in lessons:
-            schedule_df.append([class_name, day, period, teacher, subject])
-    
-    schedule_df = pd.DataFrame(schedule_df, columns=['Класс', 'День', 'Период', 'Учитель', 'Предмет'])
-    return schedule_df
+# Функция для вывода расписания в текстовом формате для одного класса
+def schedule_to_text(schedule, class_name):
+    output = []
+    for day, lessons in schedule[class_name].items():
+        lessons_str = ', '.join([lesson if lesson else '---' for lesson in lessons])
+        output.append(f"{day}: {lessons_str}")
+    return "\n".join(output)
 
-schedule_df = display_schedule(schedule)
-schedule_df.sort_values(by=['Класс', 'День', 'Период'], inplace=True)
+# Сохранение расписания в текстовый файл
+def save_schedule_to_text_file(schedule, class_name, file_path):
+    schedule_text = schedule_to_text(schedule, class_name)
+    with open(file_path, 'w', encoding='utf-8') as file:
+        file.write(schedule_text)
 
-# Отображение первых 10 строк расписания
-print(schedule_df.head(10))
+# Сохранение расписания для всех классов в текстовые файлы
+for class_name in schedule:
+    sanitized_class_name = re.sub(r'[^\w\s-]', '', class_name).replace(' ', '_')
+    text_file_path = f'schedule_{sanitized_class_name}.txt'
+    save_schedule_to_text_file(updated_schedule, class_name, text_file_path)
+    print(f"Saved schedule for {class_name} to {text_file_path}")
 
-# Сохранение результата в файл
-schedule_df.to_excel('school_schedule.xlsx', index=False)
+# Проверка содержимого одного из файлов
+text_file_path
