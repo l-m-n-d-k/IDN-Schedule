@@ -1,119 +1,82 @@
 import pandas as pd
-import re
+import json
 
-# Загрузка данных из файлов
-class_subs_hours_path = 'class+subs-hours.xlsx'
-teacher_subs_room_class_path = 'teacher_subs_room_class.xlsx'
+# Обработка данных
+def process_class_subs_hours(df):
+    classes = {}
+    current_class = None
+    for index, row in df.iterrows():
+        if pd.isna(row.iloc[0]):
+            continue
+        if pd.isna(row.iloc[1]):
+            current_class = row.iloc[0]
+            classes[current_class] = []
+        else:
+            subject = row.iloc[0].strip()
+            hours = row.iloc[1]
+            if current_class is not None:
+                classes[current_class].append((subject, hours))
+            else:
+                print(f"Error at index {index}: current_class is None")
+    return classes
 
-class_subs_hours = pd.read_excel(class_subs_hours_path)
-teacher_subs_room_class = pd.read_excel(teacher_subs_room_class_path)
-
-# Преобразование данных из таблиц в удобный формат
-class_subs_hours.columns = ['Класс/Предмет', 'Часы']
-class_subs_hours['Класс/Предмет'] = class_subs_hours['Класс/Предмет'].fillna('')
-
-class_data = {}
-current_class = None
-
-for index, row in class_subs_hours.iterrows():
-    if pd.isna(row['Часы']) and row['Класс/Предмет'] != '':
-        current_class = row['Класс/Предмет']
-        class_data[current_class] = {}
-    elif not pd.isna(row['Часы']) and current_class:
-        class_data[current_class][row['Класс/Предмет']] = int(row['Часы'])
-
-# Подготовка данных о нагрузке учителей
-teacher_data = teacher_subs_room_class[['Учитель', 'Предметы', 'Кабинет', 'Классы']]
-teacher_data['Классы'] = teacher_data['Классы'].str.replace('\n', '')
-
-# Создание словаря с расписанием для каждого класса
-days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница']
-schedule = {class_name: {day: ['']*7 for day in days} for class_name in class_data.keys()}
-
-# Заполнение фиксированных уроков
-for class_name in schedule:
-    schedule[class_name]['Понедельник'][0] = 'Разговоры о важном'
-    schedule[class_name]['Четверг'][6] = 'Классный час'
-
-# Функция проверки занятости учителя
-def is_teacher_available(schedule, teacher, day, lesson):
-    for class_schedule in schedule.values():
-        if class_schedule[day][lesson] == teacher:
-            return False
-    return True
-
-# Функция проверки допустимого количества уроков в день для класса
-def is_class_limit_exceeded(class_name, schedule, day, max_lessons):
-    return sum(1 for lesson in schedule[class_name][day] if lesson) >= max_lessons
-
-# Распределение уроков с учетом занятости учителей и ограничений
-def distribute_lessons(schedule, class_data, teacher_data):
+# Генерация расписания
+def generate_schedule(classes_data):
+    # Инициализация пустого расписания
+    schedule = {}
     days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница']
+    max_lessons_per_day = {'5': 6, '6': 6, '7': 7, '8': 7, '9': 7, '10': 7, '11': 7}
     
-    # Создаем словарь соответствия учителей и предметов
-    teacher_subjects = {}
-    for _, row in teacher_data.iterrows():
-        teacher = row['Учитель']
-        subjects = row['Предметы'].split(',')
-        for subject in subjects:
-            if subject not in teacher_subjects:
-                teacher_subjects[subject] = []
-            teacher_subjects[subject].append(teacher)
+    for cls in classes_data.keys():
+        grade = cls.split(" ")[0]  # Получаем класс (например, '5', '6', ...)
+        schedule[cls] = {day: [None] * max_lessons_per_day[grade] for day in days}
     
-    for class_name, subjects in class_data.items():
-        lessons_to_schedule = [(subject, hours) for subject, hours in subjects.items()]
+    # Заполнение фиксированных уроков
+    for cls in classes_data.keys():
+        schedule[cls]['Понедельник'][0] = 'Разговоры о важном'
+        grade = cls.split(" ")[0]  # Получаем класс (например, '5', '6', ...)
+        last_lesson_index = max_lessons_per_day[grade] - 1
+        schedule[cls]['Четверг'][last_lesson_index] = 'Классный час'  # Предполагается, что классный час - последний урок
+    
+    # Заполнение оставшегося расписания
+    for cls, subjects in classes_data.items():
+        grade = cls.split(" ")[0]  # Получаем класс (например, '5', '6', ...)
+        max_lessons = max_lessons_per_day[grade]
         
-        # Сортируем предметы по убыванию часов для равномерного распределения
-        lessons_to_schedule.sort(key=lambda x: x[1], reverse=True)
+        day_order = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница']
+        day_index, lesson_index = 0, 1
         
-        max_lessons = 6 if "5" in class_name or "6" in class_name else 7
-        
-        for subject, hours in lessons_to_schedule:
-            distributed_hours = 0
-            
-            for day in days:
-                if distributed_hours >= hours:
-                    break
-
-                for lesson in range(7):
-                    if schedule[class_name][day][lesson] == '' and (lesson == 0 or schedule[class_name][day][lesson-1] != subject):
-                        if is_class_limit_exceeded(class_name, schedule, day, max_lessons):
-                            continue
-                        available_teachers = teacher_subjects.get(subject, [])
-                        for teacher in available_teachers:
-                            if is_teacher_available(schedule, teacher, day, lesson):
-                                schedule[class_name][day][lesson] = subject
-                                distributed_hours += 1
-                                break
-
-                        if distributed_hours >= hours:
-                            break
+        for subject, hours in subjects:
+            while hours > 0 and day_index < len(day_order):
+                if lesson_index >= max_lessons:
+                    lesson_index = 0
+                    day_index += 1
+                    if day_index >= len(day_order):
+                        break
+                day = day_order[day_index]
+                if schedule[cls][day][lesson_index] is None:
+                    # Проверка на повторение более двух раз подряд
+                    if lesson_index < 2 or schedule[cls][day][lesson_index-1] != subject or schedule[cls][day][lesson_index-2] != subject:
+                        schedule[cls][day][lesson_index] = subject
+                        hours -= 1
+                lesson_index += 1
 
     return schedule
 
-# Применяем функцию к нашему расписанию
-updated_schedule = distribute_lessons(schedule, class_data, teacher_data)
+# Загружаем данные
+class_subs_hours = pd.read_csv('class_subs_hours.csv')
+teacher_subs_room_class = pd.read_csv('teacher_subs_room_class.csv')
 
-# Функция для вывода расписания в текстовом формате для одного класса
-def schedule_to_text(schedule, class_name):
-    output = []
-    for day, lessons in schedule[class_name].items():
-        lessons_str = ', '.join([lesson if lesson else '---' for lesson in lessons])
-        output.append(f"{day}: {lessons_str}")
-    return "\n".join(output)
+# Обработка данных из первой таблицы
+classes_data = process_class_subs_hours(class_subs_hours)
 
-# Сохранение расписания в текстовый файл
-def save_schedule_to_text_file(schedule, class_name, file_path):
-    schedule_text = schedule_to_text(schedule, class_name)
-    with open(file_path, 'w', encoding='utf-8') as file:
-        file.write(schedule_text)
+# Генерация расписания
+schedule = generate_schedule(classes_data)
 
-# Сохранение расписания для всех классов в текстовые файлы
-for class_name in schedule:
-    sanitized_class_name = re.sub(r'[^\w\s-]', '', class_name).replace(' ', '_')
-    text_file_path = f'schedule_{sanitized_class_name}.txt'
-    save_schedule_to_text_file(updated_schedule, class_name, text_file_path)
-    print(f"Saved schedule for {class_name} to {text_file_path}")
+# Сохранение расписания для всех классов в JSON-файл
+def save_schedule_to_json(schedule, filename='school_schedule.json'):
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(schedule, f, ensure_ascii=False, indent=4)
 
-# Проверка содержимого одного из файлов
-text_file_path
+# Сохранение расписания
+save_schedule_to_json(schedule)
