@@ -61,11 +61,13 @@ def assign_classes(schedule, class_hours, teacher_data):
                     lesson_index = 1
                     day_index += 1
                     if day_index == 5:
+                        print(f"Сброс day_index для класса {class_name} и предмета {subject}")
                         day_index = 0
                 elif lesson_index == 7:
                     lesson_index = 1
                     day_index += 1
                     if day_index == 5:
+                        print(f"Сброс day_index для класса {class_name} и предмета {subject}")
                         day_index = 0
 
                 day_name = list(schedule[class_name].keys())[day_index]
@@ -83,12 +85,20 @@ def assign_classes(schedule, class_hours, teacher_data):
                             room_schedule[room_number][day_name][lesson_index] = subject
                             hours_assigned += 1
                             break
+                else:
+                    print(f"Время {lesson_index} в {day_name} уже занято для класса {class_name}")
+                
                 lesson_index += 1
                 if lesson_index == 6:
                     lesson_index = 1
                     day_index += 1
                     if day_index == 5:
                         day_index = 0
+
+                # Safety check to avoid infinite loop
+                if processed_subjects > total_subjects * 10:
+                    raise RuntimeError("Программа застряла в бесконечном цикле")
+
     end_time = time.time()
     print(f"Назначение уроков: {end_time - start_time} секунд")
     return schedule
